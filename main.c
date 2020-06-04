@@ -6,6 +6,9 @@
 
 int main(int argc, char *argv[]) {
 
+    // Indexing
+    int i;
+
     // Return value for various errors
     int rv = 0;
 
@@ -20,6 +23,15 @@ int main(int argc, char *argv[]) {
 
     // Coordinates of each image frame in the file stream
     int coord_array[max_frames];
+
+    // A sample frame to retrieve
+    int frame_idx = 0;
+
+    // The number of pixels in the image, to be set
+    unsigned long int n_pixels;
+
+    // The Y and X dimensions of the data
+    int yx[2];
 
 
     // Parse CLI args
@@ -44,26 +56,35 @@ int main(int argc, char *argv[]) {
 
     printf("n_frames = %d\n", n_frames);
 
-    // Try to get the first frame
-    int frame_idx = 0;
-    unsigned long int n_pixels = get_n_pixels(
-        coord_array[0],
-        fp
-    );
-    printf("n_pixels = %lu\n", n_pixels);
+    // Get the number of pixels using the first image frame (demonstration)
+    n_pixels = get_n_pixels(coord_array[0], fp);
 
-    // Read the first frame with the get_frame function
-    unsigned short frame[n_pixels];
-    rv = get_frame(coord_array[0], fp, frame);
-    if (rv == 0) {
-        printf("get_frame was successful\n");
-    } else {
-        printf("get_frame failed for some reason\n");
-    }
-    for (int i=0; i<n_pixels; i++) {
-        printf("frame[%d] = %d\n", i, frame[i]);
-    }
+    // Get the Y and X dimensions of the movie
+    rv = get_height_width(fp, yx);
+    if (rv != 0) {
+        printf("Couldn't retrieve height and width\n");
+        return 1;
+    }   
 
+    // Read the first frame as a 1D array
+    unsigned short arr[n_pixels];
+    rv = get_frame(coord_array[0], fp, arr);
+    for (i=0; i<n_pixels; i++)
+        printf("%d: %hu\n", i, arr[i]);
+
+    // // Read the first frame as a 2D array
+    // unsigned short **arr = (unsigned short **)malloc(yx[0]*sizeof(unsigned short *));
+    // for (i=0; i<yx[0]; i++) 
+    //     arr[i] = (unsigned short *)malloc(yx[1]*sizeof(unsigned short));
+
+    // Read from the file
+    // rv = get_frame_2D(0, fp, coord_array, yx[0], yx[1], arr);
+    // pr_unsigned_short(yx[0], yx[1], arr);
+
+    // // Clear memory
+    // for (i=0; i<yx[0]; i++) 
+    //     free(arr[i]);
+    // free(arr);
 
     // Close the input filestream
     fclose(fp);

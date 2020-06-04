@@ -4,10 +4,15 @@
 #include <regex.h>
 #include <string.h>
 int regex_check(char *expr, char *string);
+unsigned long int get_chunkmap_start(FILE *fp);
 int partialstrcpy(int n_chars, char *buffer, char *src);
 int get_frame_coords(int max_frames, FILE *fp, int *out_coords);
 int get_frame(int start_coord, FILE *fp, unsigned short *out);
+int get_frame_2D(int frame_idx, FILE *fp, int *frame_coords, int height, int width, unsigned short **out);
+void pr_unsigned_short(int height, int width, unsigned short **arr);
 unsigned long int get_n_pixels(int frame_start_coord, FILE *fp);
+long int seek_string(char *query, FILE *fp, unsigned long int start_coord);
+int get_height_width(FILE *fp, int *out);
 
 /*
  *  Function: regex_check
@@ -27,6 +32,7 @@ int regex_check(char *expr, char *string) {
 
     // Check for errors in regex compilation
     if (return_value != 0) {
+        printf("regex compilation error\n");
         return return_value; 
     }
 
@@ -62,6 +68,28 @@ int partialstrcpy(int n_chars, char *buffer, char *src) {
         }
     }
     return 0;
+}
+
+/*
+ *  Function: get_chunkmap_start
+ *  ----------------------------
+ *  Get the start of the chunk map encoding the coordinates of 
+ *  other items in an ND2 file.
+ *
+ *  Parameters
+ *  ----------
+ *    fp    :  ND2 file stream
+ *
+ *  Returns
+ *  -------
+ *    long int, the start coordinate of the chunk map
+ *
+*/
+unsigned long int get_chunkmap_start(FILE *fp) {
+    unsigned long int result;
+    fseek(fp, -8, SEEK_END);
+    fread(&result, 8, 1, fp);
+    return result;
 }
 
 /*
@@ -248,6 +276,87 @@ int get_frame(int start_coord, FILE *fp, unsigned short *out)
     return 1-(return_value==n_pixels);
 }
 
+/* 
+ *  Function: get_frame_2D
+ *  ----------------------
+ *  Get an image frame from the movie, formatting as a float-valued
+ *  2D array. **CURRENTLY GIVING STRANGE RESULTS; USE THE 1D VERSION
+ *  AND FORMAT INTO 2D ARRAY INSTEAD**
+ *
+ *  Parameters
+ *  ----------
+ *    frame_idx     :   the index of the frame to retrieve
+ *    fp            :   ND2 file stream 
+ *    frame_coords  :   the start coordinates of each of the frames in 
+ *                      the ND2 file. See get_frame_coords().
+ *    height        :   height of the image frame (see get_height_width)
+ *    width         :   width of the image frame
+ *    out           :   2D array of size (height, width) for output
+ *
+ *  Returns
+ *  -------
+ *    int, 0 if no errors
+ *
+*/
+int get_frame_2D(int frame_idx, FILE *fp, int *frame_coords, int height, int width, unsigned short **out) {
+
+    int r, i, offset;
+    float timestamp;
+    unsigned long int frame_length, n_pixels;
+    int start_coord = frame_coords[frame_idx];
+
+    // Go to the start coordinate in the filestream
+    fseek(fp, start_coord+4, SEEK_SET);
+
+    // Read the offset, encoded in bytes 4-8
+    fread(&offset, 4, 1, fp);
+
+    // Read the frame length, encoded in bytes 8-16
+    fread(&frame_length, 8, 1, fp);
+
+    // Get the actual number of pixels
+    n_pixels = (frame_length - 8) / 2;  
+    printf("n_pixels = %lu\n", n_pixels);
+    printf("height * width = %d\n", height*width);
+
+    // Use the offset to find the start of the actual data
+    fseek(fp, start_coord+offset+16, SEEK_SET);
+
+    // The first 4 bytes after this encode a timestamp
+    fread(&timestamp, 4, 1, fp);
+    printf("timestamp = %f\n", timestamp);
+
+    // Read the rest into an array
+    fseek(fp, start_coord+offset+24, SEEK_SET);
+    for (i=0; i<height; i++) {
+        r = fread(out[i], 2, n_pixels, fp);
+        if (r != n_pixels) {
+            printf("Failed to read\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ *  Function: pr_unsigned_short
+ *  ---------------------------
+ *  Print a 2D unsigned short array.
+ *
+ *  Parameters
+ *  ----------
+ *    height    :   image height in pixels
+ *    width     :   image width in pixels
+ *    **arr     :   unsigned short array
+ *
+*/
+void pr_unsigned_short(int height, int width, unsigned short **arr) {
+    for (int i=0; i<height; i++) {
+        for (int j=0; j<width; j++)
+            printf("%hu\t", arr[i][j]);
+        printf("\n");
+    }
+}
 
 /* 
  *  Function: get_n_pixels
@@ -280,9 +389,185 @@ unsigned long int get_n_pixels(int frame_start_coord, FILE *fp) {
     return n_pixels;
 }
 
+/*
+ *  Function: seek_string
+ *  ---------------------
+ *  Use brute force to seek a particular substring in a 
+ *  filestream.
+ *
+ *  Parameters
+ *  ----------
+ *    query       :   the string to seek 
+ *    fp          :   file stream
+ *    start_coord :   the first coordinate in the file stream 
+ *                    to use 
+ * 
+ *  Returns
+ *  -------
+ *    long int, the file coordinate corresponding to the first
+ *      instance of the substring, or -1 if none found
+*/
+long int seek_string(char *query, FILE *fp, unsigned long int start_coord) {
 
+    unsigned long int file_size, search_size;
+    int query_size = strlen(query);
+    char buffer[query_size];
+    int r, i;
+    long int result;
 
+    fseek(fp, -1, SEEK_END);
+    file_size = ftell(fp) + 1;
+    search_size = file_size - start_coord - query_size;
+    fseek(fp, start_coord, SEEK_SET);
 
+    result = 0;
+    while (result<search_size) {
+        fseek(fp, result+start_coord, SEEK_SET);
+        r = fread(&buffer, query_size, 1, fp);
+        if (r==1) {
+            i = 0;
+            while (buffer[i] == query[i]) {
+                i++;
+                if (i == query_size) {
+                    return result + start_coord;
+                }
+            }
+        }
+        result++;
+    }
+    return -1;
+}
+
+/*
+ *  Function: get_height_width
+ *  --------------------------
+ *  Get the height and width of Nikon ND2 images.
+ *
+ *  Parameters
+ *  ----------
+ *    fp     : ND2 file stream
+ *    *out   : array of integers of size 2, to write height, width
+ *
+ *  Returns
+ *  -------
+ *    int, 0 if no errors
+ *
+*/
+int get_height_width(FILE *fp, int *out) {
+
+    int r, offset, i, j;
+    unsigned long int img_attrib_coord, img_attrib_size, chunk_map_start;
+    unsigned long int height_coord = 0;
+    unsigned long int width_coord = 0;
+    char c;
+    char *query0 = "uiHeight";
+    char *query1 = "uiWidth";
+    int query0_size = strlen(query0);
+    int query1_size = strlen(query1);
+    char buffer0[query0_size];
+    char buffer1[query1_size];
+
+    // First, find the coordinate of the ImageAttributesLV! group
+    chunk_map_start = get_chunkmap_start(fp);
+    char *query = "ImageAttributesLV";
+    long int match = seek_string(query, fp, chunk_map_start);
+    if (match < chunk_map_start) {
+        printf("Could not parse out the ImageAttributesLV! metadata attribute\n");
+        return 1;
+    }
+
+    // Go to this location
+    fseek(fp, match+18, SEEK_SET);
+    r = fread(&img_attrib_coord, 8, 1, fp);
+    if (r != 1) {
+        printf("Could not parse out the ImageAttributesLV! data coordinate\n");
+        return 1;
+    }
+
+    // Go the image attribute coord in the file; first 4 bytes are a header
+    r = fseek(fp, img_attrib_coord+4, SEEK_SET);
+
+    // Bytes 4-8 are the offset by which we need to move to 
+    // find the actual attributes
+    r = fread(&offset, 4, 1, fp);
+    if (r != 1) {
+        printf("Could not parse the image attribute offset\n");
+        return 1;
+    }
+
+    // Bytes 8-16 encode the size of the metadata item 
+    r = fread(&img_attrib_size, 8, 1, fp);
+    if (r != 1) {
+        printf("Could not parse the image attribute size\n");
+        return 1;
+    }
+
+    // Go the location of the image attributes
+    r = fseek(fp, img_attrib_coord+offset+16, SEEK_SET);
+
+    // The next *img_attrib_size* characters could potentially hold the 
+    // uiHeight and uiWidth keys, which are what we're after. Unfortunately,
+    // they're staggered in the file: u (something) i (something) H (something) ...
+    // so we need to do some fancy string parsing
+
+    for (i=0; i<img_attrib_size; i++) {
+
+        r = fseek(fp, img_attrib_coord+offset+16+i, SEEK_SET);
+
+        j = 0;
+        while (query0[j] == fgetc(fp)) {
+            c = fgetc(fp);
+            j++;
+            if (j == query0_size) {
+                height_coord = i+img_attrib_coord+offset+16; 
+                break;
+            }
+        }
+
+        if (height_coord != 0) {
+            printf("height_coord = %lu\n", height_coord);
+            break;
+        }
+
+    }
+
+    // Go to this location and read the image height
+    if (height_coord == 0) {
+        printf("Couldn't find the uiHeight metadata key\n");
+        return 1;
+    }
+    r = fseek(fp, height_coord+18, SEEK_SET);
+    r = fread(&out[0], 4, 1, fp);
+
+    // Now do the same for the key uiWidth
+    for (i=0; i<img_attrib_size; i++) {
+        r = fseek(fp, img_attrib_coord+offset+16+i, SEEK_SET);
+        j = 0;
+        while (query1[j] == fgetc(fp)) {
+            c = fgetc(fp);
+            j++;
+            if (j == query1_size) {
+                width_coord = i+img_attrib_coord+offset+16;
+                break;
+            }
+        }
+
+        if (width_coord != 0) {
+            printf("width_coord = %lu\n", width_coord);
+            break;
+        }
+    }
+
+    // Go to this location and read the image width
+    if (width_coord == 0) {
+        printf("Couldn't find the uiWidth metadata key\n");
+        return 1;
+    }
+    r = fseek(fp, width_coord+16, SEEK_SET);
+    r = fread(&out[1], 4, 1, fp);
+
+    return 0;
+}
 
 
 
